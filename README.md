@@ -1,5 +1,6 @@
-# CoralNet_MBON
- R codes and data files : "Machine learning applications to monitor marine Essential Biodiversity Variables of rocky shore communities"
+# Automated-annotations-on-rocky-shores
+
+ R codes and data files for the paper: "Robots versus humans: automated annotation accurately quantifies Essential Ocean Variables of rocky intertidal functional groups and habitat state"
 
 ## Folders:
 
@@ -23,32 +24,10 @@ CoralNet Source: https://coralnet.ucsd.edu/source/2048/
 
 CoralNet Source: https://coralnet.ucsd.edu/source/2268/
 
-#### Source_Galapagos
-- annotations.csv
-- metadata.csv
-- percent_cover.csv
-
-CoralNet Source: https://coralnet.ucsd.edu/source/1949/
-
-#### Source_Colombia
-- annotations.csv
-- metadata.csv
-- percent_cover.csv
-
-CoralNet Source: https://coralnet.ucsd.edu/source/1983/
-
-#### Source_Argentina
-- annotations.csv
-- metadata.csv
-- percent_cover.csv
-
-CoralNet Source: https://coralnet.ucsd.edu/source/1988/
-
 #### Figures
 - Plots
 
 #### Labelset
 - labelset_used.csv
-- labelset.csv
-- lLABELSET_MBON.xlsx
+- LABELSET_MBON.xlsx
 
