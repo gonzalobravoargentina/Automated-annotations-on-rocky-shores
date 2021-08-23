@@ -1,0 +1,554 @@
+---
+title: "Photoquadrats"
+author: 'E. Klein'
+date: "20210617"
+output: 
+  html_document:
+    toc:  TRUE
+    toc_float: TRUE
+    toc_depth: 5
+    theme: spacelab
+    highlight: kate
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, cache = F, echo = F, message = F, warning = F, tidy = F}
+# make this an external chunk that can be included in any file
+require(knitr)
+options(width = 100)
+opts_chunk$set(echo =T, message = F, error = F, warning = F, comment = NA,  
+               fig.align = 'left',  fig.width = 7.5, fig.height = 6,
+               tidy = F, cache.path = '.cache/', fig.path = 'fig/')
+               
+library(RColorBrewer)
+palette(brewer.pal(8, "Set2"))
+
+
+## load packages
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(forcats)
+
+library(ggplot2)
+library(ggpubr)
+library(kableExtra)
+library(patchwork)
+library(formattable)
+
+library(caret)
+library(vegan)
+
+
+# Suppress summarise info
+options(dplyr.summarise.inform = FALSE)
+
+
+## data source
+dataDir <- "../Source_MBON_AR_CO_EC_US_Robot/"
+confmatDir <- "../confusion_matrix/"
+```
+
+last run `r Sys.time()`
+
+
+## Goals
+
+This document evaluates the performance of the CoralNet to classify rocky shores main groups from photoquadrats
+
+The analysis comprises:
+
+1. Evaluate the performance of the CoralNet classifier.
+2. Compare the classification results of the visually identified quadrats with automatic classification of photoquadrats
+
+## Data
+
+The data is available at [CoralNet_MBON Github repository](https://github.com/gonzalobravoargentina/CoralNet_MBON). The codes for doing the analysis could be found the the Code directory of the same repo.
+
+
+## CoralNet Classifier performance
+
+### Labels
+
+Human labelled photoquadrats were used as a training input for the CoralNet classifier. A total of 360 pictures with 100 rectagular grid of points were annotated using the following labels: 
+
+```{r}
+labelset <- read.csv("../Labelset/labelset_used.csv")
+
+kable(labelset) %>% kable_styling("striped")
+
+```
+
+
+Proportion of the labels in the set
+
+```{r}
+df <- read.csv(file.path(dataDir, "annotations.csv"))
+dfHuman <- df %>% filter(Comments=='random')
+dfRobot <- df %>% filter(Comments=='robot')
+dfSummary <- dfHuman %>% group_by(Label) %>% 
+  summarise(nPoints = n(), Countries = paste0(unique(country), collapse = ", ")) %>% 
+  mutate(Percent = round(100*nPoints/nrow(df),1)) %>% 
+  arrange(-nPoints)
+dfSummary <- left_join(dfSummary, labelset[,c('Name', 'Short.Code')], by=c('Label'='Short.Code')) %>% 
+  relocate(Name, Label, nPoints, Percent, Countries)
+
+formattable(dfSummary, list(Percent=color_bar("steelblue")))
+```
+
+
+As functional groups the labels and its representation in the data set: 
+
+
+
+```{r}
+dfFuncGroup <- left_join(df, labelset[,c('Functional.Group', 'Short.Code')], by=c('Label'='Short.Code') )
+dfSummary <- dfFuncGroup %>% group_by(Functional.Group) %>% 
+  summarise(nPoints = n(), Countries = paste0(unique(country), collapse = ", ")) %>% 
+  mutate(Percent = round(100*nPoints/nrow(df),1)) %>% 
+  relocate(Functional.Group, nPoints, Percent, Countries) %>% 
+  arrange(-nPoints)
+
+formattable(dfSummary, list(Percent=color_bar("steelblue")), caption="Functional groups label set")
+```
+
+
+
+
+### Confusion Matrix
+
+CoralNet uses 7/8 of the data points to train the classification engine and 1/8 as a test set, to calculate the confusion matrix and the classifier accuracy. 
+
+
+#### Full label set
+
+
+```{r}
+cm <- read.csv(file.path(confmatDir, "New model/confusion_matrix_full_0.csv"), header=FALSE)
+
+##get the Label. It is tricky as the first label has two parenthesis. The valid label is the last one in parenthesis
+tblLabels <- str_split( cm[,1], "\\(")
+tblLabels <- gsub("\\)", "", unlist(lapply(tblLabels, tail,1)))
+nLabels <- nrow(cm) 
+## modify here to select the first n lables
+#nLabels = 7
+
+tt <- as.table(as.matrix(cm[1:nLabels,2:(nLabels+1)]))
+rownames(tt) <- tblLabels[1:nLabels]
+colnames(tt) <- tblLabels[1:nLabels]
+
+cmm =confusionMatrix(tt)
+
+```
+
+The confusion matrix in numbers: 
+
+
+```{r}
+tbl <- cmm$table
+tblDF <- as.data.frame.matrix(tbl)
+formattable(tblDF, list(area(row=TRUE)~color_tile("transparent", "steelblue")))
+
+```
+
+
+The confusion matrix is (in percentage of row totals):
+
+```{r}
+tbl <- round(100*prop.table(cmm$table, margin = 1),1)
+formattable(as.data.frame.matrix(tbl), list(area(row=TRUE)~color_tile("transparent", "coral")))
+
+```
+
+
+
+The general accuracy of the classifier is **`r round(100*cmm$overall[1],2)`%**.  
+
+In %:
+
+```{r}
+round(100*cmm$overall, 2)
+```
+
+
+The classifier produces a set of five "guesses" for the labels and a confidence for each guess (analogous to a certainty percent) for each points, and assign to the point the label with highest confidence. The variability of the confidence of the first suggestion is a good indicator of the performance of the classifier for each of the labels.
+
+```{r}
+
+dfLabelSugg <- dfRobot %>% group_by(Label) %>% 
+  summarise(n = n(), min = min(Machine.confidence.1), mean = round(mean(Machine.confidence.1),1),
+            max = max(Machine.confidence.1), p75 = quantile(Machine.confidence.1, 0.75),
+            p95 = quantile(Machine.confidence.1, 0.95)
+  )
+dfLabelSugg <- left_join(dfLabelSugg, labelset[,c('Name', 'Short.Code')], by=c('Label'='Short.Code')) %>% 
+  arrange(-mean) %>% 
+  relocate(Name)
+
+
+formattable(dfLabelSugg, list(mean=color_bar("steelblue")))
+
+
+pp = ggplot(dfRobot, aes(x=fct_reorder(Label, Machine.confidence.1, max ), y=Machine.confidence.1, group=Label))
+pp + geom_violin(draw_quantiles = 0.5, fill="steelblue", alpha=0.5) +
+  labs(x="", y="Machine suggestion confidence (%)") + 
+  theme_pubclean()
+
+
+
+```
+
+
+#### Functional group labels
+
+
+Analysis of the performance of the classifier on **Functional Groups**
+
+```{r}
+cm <- read.csv(file.path(confmatDir, "New model/confusion_matrix_func_0.csv"), header=FALSE)
+
+
+##get the Label. It is tricky as the first label has two parenthesis. The valid label is the last one in parenthesis
+tblLabels <- str_split( cm[,1], "\\(")
+tblLabels <- gsub("\\)", "", unlist(lapply(tblLabels, tail,1)))
+nLabels <- nrow(cm)
+## modify here to select the first n lables
+#nLabels = 7
+
+tt <- as.table(as.matrix(cm[1:nLabels,2:(nLabels+1)]))
+rownames(tt) <- tblLabels[1:nLabels]
+colnames(tt) <- tblLabels[1:nLabels]
+
+cmm =confusionMatrix(tt)
+
+```
+
+The confusion matrix in numbers: 
+
+
+```{r}
+tbl <- cmm$table
+formattable(as.data.frame.matrix(tbl), list(area(row=T)~color_tile("transparent", "steelblue")))
+
+```
+
+
+The confusion matrix is (in percentage of row totals):
+
+```{r}
+tbl <- round(100*prop.table(cmm$table, margin = 1),1)
+formattable(as.data.frame.matrix(tbl), list(area(row=TRUE)~color_tile("transparent", "coral")))
+
+```
+
+
+
+The general accuracy of the classifier is **`r round(100*cmm$overall[1],2)`%**.  
+
+In %:
+
+```{r}
+round(100*cmm$overall, 2)
+```
+
+
+
+
+
+## Similarity with visual
+
+The idea here is to test if there is differences between the quadrat surveyed in the field and analysed visually with the result of the classifier over the same quadrats.
+
+As we don't label every point in the quadrat in the field, it is not possible to make a point-to-point comparison. However, if we estimate the cover of each of the categories in each of the quadrats and do the same with the result of the classifier, it will be possible to calculate a distance metric that represent how different are the estimates. AS we are dealing with counts (number of points in each category), a Bray-Curtis distance is appropriate. Here the hypothesis is that if both methods produce the same result, the BC distance must be zero.
+
+For each quadrat it is possible to make a community matrix: 2 rows, visual and machine estimates, and n columns, being n the number of labels). Then we can calculate the BC distance comparing the two methods. 
+
+Then we can compare the BC distances (as proportions) using a generalized nested mixed models.
+
+Method:
+
+1. bind visual cover estimates from all sites, except USA, as the USA photoquadrats does not coincide with the quadrats used for visual estimates
+
+```{r}
+## bind visual data
+
+CM_Visual <- bind_rows(read.csv("../Visual_quadrats/argentina_visual.csv"),
+                     read.csv("../Visual_quadrats/colombia_visual.csv"),
+                     read.csv("../Visual_quadrats/galapagos_visual.csv"))
+
+CM_VisualLong <- CM_Visual %>% pivot_longer(cols = 21:33, names_to = 'Label', values_to = 'Count' )
+
+## make community matrix from robot
+CM_Robot <- dfRobot %>% group_by(Name, Label) %>% summarise(n = n())
+## make it wide
+CM_Robot <- CM_Robot %>% pivot_wider(id_cols = 'Name', names_from = 'Label', values_from = 'n')
+## replace NA by zero
+CM_Robot[is.na(CM_Robot)] <- 0
+
+
+## match the Names with visual (dropping USA quadrats)
+visualQD <- unique(CM_Visual$Name)
+CM_Robot = CM_Robot[CM_Robot$Name %in% visualQD,]
+
+
+```
+
+#### Full Label Set
+
+We will use the only the labels produced by the classifier as the label set. We will drop not used labels from the visual and recalculate the cover.
+
+```{r}
+## calculate BC index
+BC <- data.frame(Country=character(), Site=character(), Strata=character(), BC=numeric())
+for (i in 1:nrow(CM_Visual)){
+  robotIndex <- which(CM_Robot$Name==CM_Visual$Name[i])
+  if (length(robotIndex) > 0 ){
+    CM_one <- bind_rows(CM_Visual[i,21:33], CM_Robot[robotIndex,2:13])
+    CM_one[is.na(CM_one)] <- 0
+    BC <- bind_rows(BC, 
+                    data.frame(Country = CM_Visual$country[i],
+                               Site = CM_Visual$site[i],
+                               Strata = CM_Visual$strata[i],
+                               BC = as.numeric(vegdist(CM_one, na.rm = T))))
+  }else {
+    print(paste0("NOT FOUND in Robot: ", CM_Visual$Name[i]))
+  }
+}
+BC$Strata <- factor(BC$Strata, levels = c("LOWTIDE", "MIDTIDE", "HIGHTIDE"))
+
+```
+
+
+
+
+```{r, fig.height=12}
+pp_ARG <- ggplot(BC %>% filter(Country=="ARGENTINA"), aes(Strata, BC))
+pp_ARG <- pp_ARG + geom_boxplot(width=0.5, aes(fill=Strata), colour="grey50") + 
+  ylim(0,0.8) + 
+  labs(title="ARGENTINA", x="", y=" ") +
+  facet_grid(~Site) + 
+  theme_pubclean() + 
+  theme(legend.position = 'none')
+
+pp_COL <- ggplot(BC %>% filter(Country=="COLOMBIA"), aes(Strata, BC))
+pp_COL <- pp_COL + geom_boxplot(width=0.5, aes(fill=Strata), colour="grey50") + 
+  ylim(0,0.8) + 
+  labs(title="COLOMBIA", x="", y="Bray-Curtis distance") +
+  facet_grid(~Site) + 
+  theme_pubclean() + 
+  theme(legend.position = 'none')
+
+pp_ECU <- ggplot(BC %>% filter(Country=="ECUADOR"), aes(Strata, BC))
+pp_ECU <- pp_ECU + geom_boxplot(width=0.5, aes(fill=Strata), colour="grey50") + 
+  ylim(0,0.8) + 
+  labs(title="ECUADOR", x="", y=" ") +
+  facet_grid(~Site) + 
+  theme_pubclean() + 
+  theme(legend.position = 'none')
+
+pp_ARG / pp_COL / pp_ECU
+
+
+```
+
+
+#### Reduced Label Set
+
+Let's try to reduce the number of labels to the most representative ones. It makes sense as the infrequent labels have poorly accuracy in the classifier as the number of training points is very low.
+
+Try with the labels that are present in 85% of the points in the Visual file:
+
+This is the number of points and accumulated % per label:
+
+```{r}
+tt = table(dfRobot$Label)
+sort(tt, decreasing = T)
+```
+
+and the accumulated %. Let's pick the labels that accumulate up to 95% of the point
+
+```{r}
+labelAcum <- CM_VisualLong %>% group_by(Label) %>% 
+  summarise(n=sum(Count, na.rm=T)) %>% 
+  arrange(-n) %>% 
+  mutate(nPercent = round(100*n/sum(n), 2), pAcum = cumsum(nPercent))
+
+kable(labelAcum, caption = "% of points per label, accumulated") %>% 
+  kable_styling("striped", full_width = FALSE)
+
+labels95 <- labelAcum$Label[labelAcum$pAcum<=96]
+
+labels95
+
+```
+
+and repeat the BC analysis, including only **`r paste0(labels95, collapse=",")`**...
+
+
+
+```{r}
+## Filter robot labels using selected visual labels
+CM_Robot5 <- CM_Robot %>% select(Name, contains(labels95))
+CM_Visual5 <- CM_Visual %>% select(Name, country, site, strata, contains(labels95))
+
+## calculate BC index
+BC <- data.frame(Country=character(), Site=character(), Strata=character(), BC=numeric())
+for (i in 1:nrow(CM_Visual)){
+  robotIndex <- which(CM_Robot5$Name==CM_Visual$Name[i])
+  if (length(robotIndex) > 0 ){
+    CM_one <- bind_rows(CM_Visual5[i,5:ncol(CM_Visual5)], CM_Robot5[robotIndex,2:ncol(CM_Robot5)])
+    CM_one[is.na(CM_one)] <- 0
+    BC <- bind_rows(BC, 
+                    data.frame(Country = CM_Visual$country[i],
+                               Site = CM_Visual$site[i],
+                               Strata = CM_Visual$strata[i],
+                               BC = as.numeric(vegdist(CM_one, na.rm = T))))
+  }else {
+    print(paste0("NOT FOUND in Robot: ", CM_Visual$Name[i]))
+  }
+}
+BC$Strata <- factor(BC$Strata, levels = c("LOWTIDE", "MIDTIDE", "HIGHTIDE"))
+```
+
+
+
+
+```{r, fig.height=12}
+pp_ARG <- ggplot(BC %>% filter(Country=="ARGENTINA"), aes(Strata, BC))
+pp_ARG <- pp_ARG + geom_boxplot(width=0.5, aes(fill=Strata), colour="grey50") + 
+  ylim(0,0.8) + 
+  labs(title="ARGENTINA", x="", y=" ") +
+  facet_grid(~Site) + 
+  theme_pubclean() + 
+  theme(legend.position = 'none')
+
+pp_COL <- ggplot(BC %>% filter(Country=="COLOMBIA"), aes(Strata, BC))
+pp_COL <- pp_COL + geom_boxplot(width=0.5, aes(fill=Strata), colour="grey50") + 
+  ylim(0,0.8) + 
+  labs(title="COLOMBIA", x="", y="Bray-Curtis distance") +
+  facet_grid(~Site) + 
+  theme_pubclean() + 
+  theme(legend.position = 'none')
+
+pp_ECU <- ggplot(BC %>% filter(Country=="ECUADOR"), aes(Strata, BC))
+pp_ECU <- pp_ECU + geom_boxplot(width=0.5, aes(fill=Strata), colour="grey50") + 
+  ylim(0,0.8) + 
+  labs(title="ECUADOR", x="", y=" ") +
+  facet_grid(~Site) + 
+  theme_pubclean() + 
+  theme(legend.position = 'none')
+
+pp_ARG / pp_COL / pp_ECU
+
+
+```
+
+Description of the BC values
+
+```{r}
+BCsummary <- BC %>% group_by(Country, Site, Strata) %>% 
+  summarize(n = n(), BCmean = mean(BC), BCsd = sd(BC), BCmin = min(BC), BCmax = max(BC),
+            BCq25 = quantile(BC, 0.25), BCmedian = median(BC), BCq75 = quantile(BC, 0.75))
+
+kable(BCsummary, digits=2) %>% kable_styling("striped", full_width = FALSE)
+```
+
+
+#### Nested model 
+
+
+Let's create additional variables: Quadrat and Site2 which are the sites coded as A, B, C
+
+
+```{r}
+
+BC$Quadrat <- rep(1:10, 27)
+BC$Site2 <- rep(c(rep("A",30), rep("B", 30), rep("C", 30)), 3)
+```
+
+and fit a binomial nested model with BC as dependent variables and Country, Site and Strata as fixed factors and Quadrat as random factor. 
+
+```{r}
+library(lme4)
+library(multcomp)
+
+par(mar=c(7,7,7,7))
+par(oma=c(1,1,1,1))
+
+model = glmer(BC ~ Country + Site2 + Strata + (Country/Site2/Strata) + (1|Quadrat), data=BC, family=binomial)
+summary(model)
+
+testStrata = glht(model, linfct = mcp("Strata" = "Tukey"))
+summary(testStrata)
+plot(confint(testStrata), cex=0.5)
+
+testSite2 = glht(model, linfct = mcp("Site2" = "Tukey"))
+summary(testSite2)
+plot(confint(testSite2))
+
+testCountry = glht(model, linfct = mcp("Country" = "Tukey"))
+summary(testCountry)
+plot(confint(testCountry))
+```
+
+
+```{r}
+BCmean <- round(mean(BC$BC),3)
+BCn <- nrow(BC)
+BCsd <- sd(BC$BC)
+BCmargin <- qt(0.975,df=BCn-1)*BCsd/sqrt(BCn)
+BCupper <- round(BCmean + BCmargin, 3)
+BClower <- round(BCmean - BCmargin, 3) 
+
+```
+
+
+AS demonstrated, the classifier is insensitive to the variability produced by Country, Site and Strata, being equally efficient no matter the source of the quadrat. **In general, the difference between the classifier and the visual estimate of the community cover of a mean quadrat is `r BCmean` with a 95% confidence interval of [`r BClower` - `r BCupper`]**
+
+
+
+## Similarity with visual: Functional groups
+
+
+TODO
+
+
+
+
+## Figure 2: new proposal
+
+I propose to plot the cover estimates from field (visual) along with estimated of the robot for the main labels only, the same included in the GMM analysis.
+
+
+
+```{r}
+## make long DFs
+CM_Visual5_long <- CM_Visual5 %>% pivot_longer(cols = 5:9, names_to = "label", values_to = 'Cover')
+CM_Visual5_long$source <- "visual"
+
+CM_Robot5_long <- CM_Robot5 %>% pivot_longer(cols = 2:6, names_to = "label", values_to = 'Cover')
+CM_Robot5_long$source <- "robot"
+
+CM_compare <- bind_rows(CM_Visual5_long, CM_Robot5_long)
+CM_compare$countryCode <- str_split(CM_compare$Name, "_", simplify = T)[,1]
+CM_compare$siteCode <- str_split(CM_compare$Name, "_", simplify = T)[,3]
+CM_compare$strataCode <- str_split(CM_compare$Name, "_", simplify = T)[,4]
+CM_compare$strataCode <- factor(CM_compare$strataCode, levels = c("LT", "MT", "HT"))
+
+```
+
+
+
+```{r fig.width=12, fig.height=10}
+
+pp <- ggplot(CM_compare, aes(label, Cover))
+pp + geom_boxplot(position=position_dodge(1), aes(fill=source), outlier.size = 0.3) +
+  labs(x="", y="Cover %") + 
+  scale_colour_brewer(palette = "Greens", aesthetics = 'fill') + 
+  facet_grid(countryCode~strataCode) + 
+  theme_pubclean(base_size=14)
+
+```
+
